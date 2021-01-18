@@ -20,6 +20,8 @@ package org.apache.flink.api.common.typeutils.base;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.CompositeTypeSerializerConfigSnapshot;
+import org.apache.flink.api.common.typeutils.CompositeTypeSerializerSnapshot;
+import org.apache.flink.api.common.typeutils.CompositeTypeSerializerUtil;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 
@@ -29,40 +31,39 @@ import java.util.Collection;
  * Configuration snapshot of a serializer for collection types.
  *
  * @param <T> Type of the element.
- *
  * @deprecated this snapshot class should no longer be used by any serializers as their snapshot.
  */
 @Internal
 @Deprecated
 public final class CollectionSerializerConfigSnapshot<C extends Collection<T>, T>
-		extends CompositeTypeSerializerConfigSnapshot<C> {
+        extends CompositeTypeSerializerConfigSnapshot<C> {
 
-	private static final int VERSION = 1;
+    private static final int VERSION = 1;
 
-	/** This empty nullary constructor is required for deserializing the configuration. */
-	public CollectionSerializerConfigSnapshot() {}
+    /** This empty nullary constructor is required for deserializing the configuration. */
+    public CollectionSerializerConfigSnapshot() {}
 
-	public CollectionSerializerConfigSnapshot(TypeSerializer<T> elementSerializer) {
-		super(elementSerializer);
-	}
+    public CollectionSerializerConfigSnapshot(TypeSerializer<T> elementSerializer) {
+        super(elementSerializer);
+    }
 
-	@Override
-	public TypeSerializerSchemaCompatibility<C> resolveSchemaCompatibility(TypeSerializer<C> newSerializer) {
-		if (newSerializer instanceof ListSerializer) {
-			ListSerializer<T> newListSerializer = (ListSerializer<T>) newSerializer;
-			ListSerializerSnapshot<T> listSerializerSnapshot = new ListSerializerSnapshot<>(newListSerializer);
+    @Override
+    @SuppressWarnings("unchecked")
+    public TypeSerializerSchemaCompatibility<C> resolveSchemaCompatibility(
+            TypeSerializer<C> newSerializer) {
+        if (!(newSerializer instanceof ListSerializer)) {
+            return super.resolveSchemaCompatibility(newSerializer);
+        }
 
-			@SuppressWarnings("unchecked")
-			TypeSerializerSchemaCompatibility<C> result = (TypeSerializerSchemaCompatibility<C>)
-				listSerializerSnapshot.resolveSchemaCompatibility(newListSerializer);
-			return result;
-		} else {
-			return super.resolveSchemaCompatibility(newSerializer);
-		}
-	}
+        return CompositeTypeSerializerUtil.delegateCompatibilityCheckToNewSnapshot(
+                newSerializer,
+                (CompositeTypeSerializerSnapshot<C, ? extends TypeSerializer>)
+                        new ListSerializerSnapshot<>(),
+                getSingleNestedSerializerAndConfig().f1);
+    }
 
-	@Override
-	public int getVersion() {
-		return VERSION;
-	}
+    @Override
+    public int getVersion() {
+        return VERSION;
+    }
 }

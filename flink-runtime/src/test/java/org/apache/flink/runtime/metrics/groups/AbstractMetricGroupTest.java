@@ -24,322 +24,395 @@ import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.core.testutils.BlockerSync;
 import org.apache.flink.metrics.CharacterFilter;
 import org.apache.flink.metrics.Metric;
+import org.apache.flink.metrics.MetricConfig;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
 import org.apache.flink.runtime.metrics.MetricRegistryImpl;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
+import org.apache.flink.runtime.metrics.ReporterSetup;
 import org.apache.flink.runtime.metrics.dump.QueryScopeInfo;
-import org.apache.flink.runtime.metrics.scope.ScopeFormats;
+import org.apache.flink.runtime.metrics.scope.ScopeFormat;
 import org.apache.flink.runtime.metrics.util.TestReporter;
+import org.apache.flink.runtime.metrics.util.TestingMetricRegistry;
+import org.apache.flink.util.TestLogger;
 
+import org.hamcrest.collection.IsMapContaining;
 import org.junit.Test;
 
-import javax.annotation.Nullable;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Tests for the {@link AbstractMetricGroup}.
- */
-public class AbstractMetricGroupTest {
-	/**
-	 * Verifies that no {@link NullPointerException} is thrown when {@link AbstractMetricGroup#getAllVariables()} is
-	 * called and the parent is null.
-	 */
-	@Test
-	public void testGetAllVariables() throws Exception {
-		MetricRegistryImpl registry = new MetricRegistryImpl(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
+/** Tests for the {@link AbstractMetricGroup}. */
+public class AbstractMetricGroupTest extends TestLogger {
+    /**
+     * Verifies that no {@link NullPointerException} is thrown when {@link
+     * AbstractMetricGroup#getAllVariables()} is called and the parent is null.
+     */
+    @Test
+    public void testGetAllVariables() throws Exception {
+        MetricRegistryImpl registry =
+                new MetricRegistryImpl(
+                        MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
 
-		AbstractMetricGroup group = new AbstractMetricGroup<AbstractMetricGroup<?>>(registry, new String[0], null) {
-			@Override
-			protected QueryScopeInfo createQueryServiceMetricInfo(CharacterFilter filter) {
-				return null;
-			}
+        AbstractMetricGroup group =
+                new AbstractMetricGroup<AbstractMetricGroup<?>>(registry, new String[0], null) {
+                    @Override
+                    protected QueryScopeInfo createQueryServiceMetricInfo(CharacterFilter filter) {
+                        return null;
+                    }
 
-			@Override
-			protected String getGroupName(CharacterFilter filter) {
-				return "";
-			}
-		};
-		assertTrue(group.getAllVariables().isEmpty());
+                    @Override
+                    protected String getGroupName(CharacterFilter filter) {
+                        return "";
+                    }
+                };
+        assertTrue(group.getAllVariables().isEmpty());
 
-		registry.shutdown().get();
-	}
+        registry.shutdown().get();
+    }
 
-	// ========================================================================
-	// Scope Caching
-	// ========================================================================
+    @Test
+    public void testGetAllVariablesWithOutExclusions() {
+        MetricRegistry registry = NoOpMetricRegistry.INSTANCE;
 
-	private static final CharacterFilter FILTER_C = new CharacterFilter() {
-		@Override
-		public String filterCharacters(String input) {
-			return input.replace("C", "X");
-		}
-	};
-	private static final CharacterFilter FILTER_B = new CharacterFilter() {
-		@Override
-		public String filterCharacters(String input) {
-			return input.replace("B", "X");
-		}
-	};
+        AbstractMetricGroup<?> group = new ProcessMetricGroup(registry, "host");
+        assertThat(group.getAllVariables(), IsMapContaining.hasKey(ScopeFormat.SCOPE_HOST));
+    }
 
-	@Test
-	public void testScopeCachingForMultipleReporters() throws Exception {
-		Configuration config = new Configuration();
-		config.setString(MetricOptions.SCOPE_NAMING_TM, "A.B.C.D");
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test1." + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX, TestReporter1.class.getName());
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test1." + ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER, "-");
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test2." + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX, TestReporter2.class.getName());
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test2." + ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER, "!");
+    @Test
+    public void testGetAllVariablesWithExclusions() {
+        MetricRegistry registry = NoOpMetricRegistry.INSTANCE;
 
-		MetricRegistryImpl testRegistry = new MetricRegistryImpl(MetricRegistryConfiguration.fromConfiguration(config));
-		try {
-			MetricGroup tmGroup = new TaskManagerMetricGroup(testRegistry, "host", "id");
-			tmGroup.counter("1");
-			assertEquals("Reporters were not properly instantiated", 2, testRegistry.getReporters().size());
-			for (MetricReporter reporter : testRegistry.getReporters()) {
-				ScopeCheckingTestReporter typedReporter = (ScopeCheckingTestReporter) reporter;
-				if (typedReporter.failureCause != null) {
-					throw typedReporter.failureCause;
-				}
-			}
-		} finally {
-			testRegistry.shutdown().get();
-		}
-	}
+        AbstractMetricGroup<?> group = new ProcessMetricGroup(registry, "host");
+        assertEquals(
+                group.getAllVariables(-1, Collections.singleton(ScopeFormat.SCOPE_HOST)).size(), 0);
+    }
 
-	@Test
-	public void testLogicalScopeCachingForMultipleReporters() throws Exception {
-		Configuration config = new Configuration();
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test1." + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX, LogicalScopeReporter1.class.getName());
-		config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "test2." + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX, LogicalScopeReporter2.class.getName());
+    @Test
+    public void testGetAllVariablesWithExclusionsForReporters() {
+        MetricRegistry registry = TestingMetricRegistry.builder().setNumberReporters(2).build();
 
-		MetricRegistryImpl testRegistry = new MetricRegistryImpl(MetricRegistryConfiguration.fromConfiguration(config));
-		try {
-			MetricGroup tmGroup = new TaskManagerMetricGroup(testRegistry, "host", "id")
-				.addGroup("B")
-				.addGroup("C");
-			tmGroup.counter("1");
-			assertEquals("Reporters were not properly instantiated", 2, testRegistry.getReporters().size());
-			for (MetricReporter reporter : testRegistry.getReporters()) {
-				ScopeCheckingTestReporter typedReporter = (ScopeCheckingTestReporter) reporter;
-				if (typedReporter.failureCause != null) {
-					throw typedReporter.failureCause;
-				}
-			}
-		} finally {
-			testRegistry.shutdown().get();
-		}
-	}
+        AbstractMetricGroup<?> group =
+                new GenericMetricGroup(registry, null, "test") {
+                    @Override
+                    protected void putVariables(Map<String, String> variables) {
+                        variables.put("k1", "v1");
+                        variables.put("k2", "v2");
+                    }
+                };
 
-	private abstract static class ScopeCheckingTestReporter extends TestReporter {
-		protected Exception failureCause;
+        group.getAllVariables(-1, Collections.emptySet());
 
-		@Override
-		public void notifyOfAddedMetric(Metric metric, String metricName, MetricGroup group) {
-			try {
-				checkScopes(metric, metricName, group);
-			} catch (Exception e) {
-				if (failureCause == null) {
-					failureCause = e;
-				}
-			}
-		}
+        assertThat(
+                group.getAllVariables(0, Collections.singleton("k1")),
+                not(IsMapContaining.hasKey("k1")));
+        assertThat(
+                group.getAllVariables(0, Collections.singleton("k1")),
+                IsMapContaining.hasKey("k2"));
+        assertThat(
+                group.getAllVariables(1, Collections.singleton("k2")),
+                IsMapContaining.hasKey("k1"));
+        assertThat(
+                group.getAllVariables(1, Collections.singleton("k2")),
+                not(IsMapContaining.hasKey("k2")));
+    }
 
-		public abstract void checkScopes(Metric metric, String metricName, MetricGroup group);
+    // ========================================================================
+    // Scope Caching
+    // ========================================================================
 
-	}
+    private static final CharacterFilter FILTER_C =
+            new CharacterFilter() {
+                @Override
+                public String filterCharacters(String input) {
+                    return input.replace("C", "X");
+                }
+            };
+    private static final CharacterFilter FILTER_B =
+            new CharacterFilter() {
+                @Override
+                public String filterCharacters(String input) {
+                    return input.replace("B", "X");
+                }
+            };
 
-	/**
-	 * Reporter that verifies the scope caching behavior.
-	 */
-	public static class TestReporter1 extends ScopeCheckingTestReporter {
-		@Override
-		public String filterCharacters(String input) {
-			return FILTER_B.filterCharacters(input);
-		}
+    @Test
+    public void testScopeCachingForMultipleReporters() throws Exception {
+        Configuration config = new Configuration();
+        config.setString(MetricOptions.SCOPE_NAMING_TM, "A.B.C.D");
 
-		@Override
-		public void checkScopes(Metric metric, String metricName, MetricGroup group) {
-			// the first call determines which filter is applied to all future calls; in this case no filter is used at all
-			assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName));
-			// from now on the scope string is cached and should not be reliant on the given filter
-			assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName, FILTER_C));
-			assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName, this));
-			// the metric name however is still affected by the filter as it is not cached
-			assertEquals("A-B-C-D-4", group.getMetricIdentifier(metricName, new CharacterFilter() {
-				@Override
-				public String filterCharacters(String input) {
-					return input.replace("B", "X").replace("1", "4");
-				}
-			}));
-		}
-	}
+        MetricConfig metricConfig1 = new MetricConfig();
+        metricConfig1.setProperty(ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER, "-");
 
-	/**
-	 * Reporter that verifies the scope caching behavior.
-	 */
-	public static class TestReporter2 extends ScopeCheckingTestReporter {
-		@Override
-		public String filterCharacters(String input) {
-			return FILTER_C.filterCharacters(input);
-		}
+        MetricConfig metricConfig2 = new MetricConfig();
+        metricConfig2.setProperty(ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER, "!");
 
-		@Override
-		public void checkScopes(Metric metric, String metricName, MetricGroup group) {
-			// the first call determines which filter is applied to all future calls
-			assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName, this));
-			// from now on the scope string is cached and should not be reliant on the given filter
-			assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName));
-			assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName, FILTER_C));
-			// the metric name however is still affected by the filter as it is not cached
-			assertEquals("A!B!X!D!3", group.getMetricIdentifier(metricName, new CharacterFilter() {
-				@Override
-				public String filterCharacters(String input) {
-					return input.replace("A", "X").replace("1", "3");
-				}
-			}));
-		}
-	}
+        config.setString(
+                ConfigConstants.METRICS_REPORTER_PREFIX
+                        + "test1."
+                        + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX,
+                TestReporter1.class.getName());
+        config.setString(
+                ConfigConstants.METRICS_REPORTER_PREFIX
+                        + "test1."
+                        + ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER,
+                "-");
+        config.setString(
+                ConfigConstants.METRICS_REPORTER_PREFIX
+                        + "test2."
+                        + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX,
+                TestReporter2.class.getName());
+        config.setString(
+                ConfigConstants.METRICS_REPORTER_PREFIX
+                        + "test2."
+                        + ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER,
+                "!");
 
-	/**
-	 * Reporter that verifies the logical-scope caching behavior.
-	 */
-	public static final class LogicalScopeReporter1 extends ScopeCheckingTestReporter {
-		@Override
-		public String filterCharacters(String input) {
-			return FILTER_B.filterCharacters(input);
-		}
+        MetricRegistryImpl testRegistry =
+                new MetricRegistryImpl(
+                        MetricRegistryConfiguration.fromConfiguration(config),
+                        Arrays.asList(
+                                ReporterSetup.forReporter(
+                                        "test1", metricConfig1, new TestReporter1()),
+                                ReporterSetup.forReporter(
+                                        "test2", metricConfig2, new TestReporter2())));
+        try {
+            MetricGroup tmGroup = new TaskManagerMetricGroup(testRegistry, "host", "id");
+            tmGroup.counter("1");
+            assertEquals(
+                    "Reporters were not properly instantiated",
+                    2,
+                    testRegistry.getReporters().size());
+            for (MetricReporter reporter : testRegistry.getReporters()) {
+                ScopeCheckingTestReporter typedReporter = (ScopeCheckingTestReporter) reporter;
+                if (typedReporter.failureCause != null) {
+                    throw typedReporter.failureCause;
+                }
+            }
+        } finally {
+            testRegistry.shutdown().get();
+        }
+    }
 
-		@Override
-		public void checkScopes(Metric metric, String metricName, MetricGroup group) {
-			final String logicalScope = ((FrontMetricGroup<AbstractMetricGroup<?>>) group).getLogicalScope(this, '-');
-			assertEquals("taskmanager-X-C", logicalScope);
-		}
-	}
+    @Test
+    public void testLogicalScopeCachingForMultipleReporters() throws Exception {
+        MetricRegistryImpl testRegistry =
+                new MetricRegistryImpl(
+                        MetricRegistryConfiguration.defaultMetricRegistryConfiguration(),
+                        Arrays.asList(
+                                ReporterSetup.forReporter("test1", new LogicalScopeReporter1()),
+                                ReporterSetup.forReporter("test2", new LogicalScopeReporter2())));
+        try {
+            MetricGroup tmGroup =
+                    new TaskManagerMetricGroup(testRegistry, "host", "id")
+                            .addGroup("B")
+                            .addGroup("C");
+            tmGroup.counter("1");
+            assertEquals(
+                    "Reporters were not properly instantiated",
+                    2,
+                    testRegistry.getReporters().size());
+            for (MetricReporter reporter : testRegistry.getReporters()) {
+                ScopeCheckingTestReporter typedReporter = (ScopeCheckingTestReporter) reporter;
+                if (typedReporter.failureCause != null) {
+                    throw typedReporter.failureCause;
+                }
+            }
+        } finally {
+            testRegistry.shutdown().get();
+        }
+    }
 
-	/**
-	 * Reporter that verifies the logical-scope caching behavior.
-	 */
-	public static final class LogicalScopeReporter2 extends ScopeCheckingTestReporter {
-		@Override
-		public String filterCharacters(String input) {
-			return FILTER_C.filterCharacters(input);
-		}
+    private abstract static class ScopeCheckingTestReporter extends TestReporter {
+        protected Exception failureCause;
 
-		@Override
-		public void checkScopes(Metric metric, String metricName, MetricGroup group) {
-			final String logicalScope = ((FrontMetricGroup<AbstractMetricGroup<?>>) group).getLogicalScope(this, ',');
-			assertEquals("taskmanager,B,X", logicalScope);
-		}
-	}
+        @Override
+        public void notifyOfAddedMetric(Metric metric, String metricName, MetricGroup group) {
+            try {
+                checkScopes(metric, metricName, group);
+            } catch (Exception e) {
+                if (failureCause == null) {
+                    failureCause = e;
+                }
+            }
+        }
 
-	@Test
-	public void testScopeGenerationWithoutReporters() throws Exception {
-		Configuration config = new Configuration();
-		config.setString(MetricOptions.SCOPE_NAMING_TM, "A.B.C.D");
-		MetricRegistryImpl testRegistry = new MetricRegistryImpl(MetricRegistryConfiguration.fromConfiguration(config));
+        public abstract void checkScopes(Metric metric, String metricName, MetricGroup group);
+    }
 
-		try {
-			TaskManagerMetricGroup group = new TaskManagerMetricGroup(testRegistry, "host", "id");
-			assertEquals("MetricReporters list should be empty", 0, testRegistry.getReporters().size());
+    /** Reporter that verifies the scope caching behavior. */
+    public static class TestReporter1 extends ScopeCheckingTestReporter {
+        @Override
+        public String filterCharacters(String input) {
+            return FILTER_B.filterCharacters(input);
+        }
 
-			// default delimiter should be used
-			assertEquals("A.B.X.D.1", group.getMetricIdentifier("1", FILTER_C));
-			// no caching should occur
-			assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B));
-			// invalid reporter indices do not throw errors
-			assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B, -1));
-			assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B, 2));
-		} finally {
-			testRegistry.shutdown().get();
-		}
-	}
+        @Override
+        public void checkScopes(Metric metric, String metricName, MetricGroup group) {
+            // the first call determines which filter is applied to all future calls; in this case
+            // no filter is used at all
+            assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName));
+            // from now on the scope string is cached and should not be reliant on the given filter
+            assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName, FILTER_C));
+            assertEquals("A-B-C-D-1", group.getMetricIdentifier(metricName, this));
+            // the metric name however is still affected by the filter as it is not cached
+            assertEquals(
+                    "A-B-C-D-4",
+                    group.getMetricIdentifier(
+                            metricName,
+                            new CharacterFilter() {
+                                @Override
+                                public String filterCharacters(String input) {
+                                    return input.replace("B", "X").replace("1", "4");
+                                }
+                            }));
+        }
+    }
 
-	@Test
-	public void testGetAllVariablesDoesNotDeadlock() throws InterruptedException {
-		final TestMetricRegistry registry = new TestMetricRegistry();
+    /** Reporter that verifies the scope caching behavior. */
+    public static class TestReporter2 extends ScopeCheckingTestReporter {
+        @Override
+        public String filterCharacters(String input) {
+            return FILTER_C.filterCharacters(input);
+        }
 
-		final MetricGroup parent = new GenericMetricGroup(registry, UnregisteredMetricGroups.createUnregisteredTaskManagerMetricGroup(), "parent");
-		final MetricGroup child = parent.addGroup("child");
+        @Override
+        public void checkScopes(Metric metric, String metricName, MetricGroup group) {
+            // the first call determines which filter is applied to all future calls
+            assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName, this));
+            // from now on the scope string is cached and should not be reliant on the given filter
+            assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName));
+            assertEquals("A!B!X!D!1", group.getMetricIdentifier(metricName, FILTER_C));
+            // the metric name however is still affected by the filter as it is not cached
+            assertEquals(
+                    "A!B!X!D!3",
+                    group.getMetricIdentifier(
+                            metricName,
+                            new CharacterFilter() {
+                                @Override
+                                public String filterCharacters(String input) {
+                                    return input.replace("A", "X").replace("1", "3");
+                                }
+                            }));
+        }
+    }
 
-		final Thread parentRegisteringThread = new Thread(() -> parent.counter("parent_counter"));
-		final Thread childRegisteringThread = new Thread(() -> child.counter("child_counter"));
+    /** Reporter that verifies the logical-scope caching behavior. */
+    public static final class LogicalScopeReporter1 extends ScopeCheckingTestReporter {
+        @Override
+        public String filterCharacters(String input) {
+            return FILTER_B.filterCharacters(input);
+        }
 
-		final BlockerSync parentSync = new BlockerSync();
-		final BlockerSync childSync = new BlockerSync();
+        @Override
+        public void checkScopes(Metric metric, String metricName, MetricGroup group) {
+            final String logicalScope =
+                    ((FrontMetricGroup<AbstractMetricGroup<?>>) group).getLogicalScope(this, '-');
+            assertEquals("taskmanager-X-C", logicalScope);
+        }
+    }
 
-		try {
-			// start both threads and have them block in the registry, so they acquire the lock of their respective group
-			registry.setOnRegistrationAction(childSync::blockNonInterruptible);
-			childRegisteringThread.start();
-			childSync.awaitBlocker();
+    /** Reporter that verifies the logical-scope caching behavior. */
+    public static final class LogicalScopeReporter2 extends ScopeCheckingTestReporter {
+        @Override
+        public String filterCharacters(String input) {
+            return FILTER_C.filterCharacters(input);
+        }
 
-			registry.setOnRegistrationAction(parentSync::blockNonInterruptible);
-			parentRegisteringThread.start();
-			parentSync.awaitBlocker();
+        @Override
+        public void checkScopes(Metric metric, String metricName, MetricGroup group) {
+            final String logicalScope =
+                    ((FrontMetricGroup<AbstractMetricGroup<?>>) group).getLogicalScope(this, ',');
+            assertEquals("taskmanager,B,X", logicalScope);
+        }
+    }
 
-			// the parent thread remains blocked to simulate the child thread holding some lock in the registry/reporter
-			// the child thread continues execution and calls getAllVariables()
-			// in the past this would block indefinitely since the method acquires the locks of all parent groups
-			childSync.releaseBlocker();
-			// wait with a timeout to ensure the finally block is executed _at some point_, un-blocking the parent
-			childRegisteringThread.join(1000 * 10);
+    @Test
+    public void testScopeGenerationWithoutReporters() throws Exception {
+        Configuration config = new Configuration();
+        config.setString(MetricOptions.SCOPE_NAMING_TM, "A.B.C.D");
+        MetricRegistryImpl testRegistry =
+                new MetricRegistryImpl(MetricRegistryConfiguration.fromConfiguration(config));
 
-			parentSync.releaseBlocker();
-			parentRegisteringThread.join();
-		} finally {
-			parentSync.releaseBlocker();
-			childSync.releaseBlocker();
-			parentRegisteringThread.join();
-			childRegisteringThread.join();
-		}
-	}
+        try {
+            TaskManagerMetricGroup group = new TaskManagerMetricGroup(testRegistry, "host", "id");
+            assertEquals(
+                    "MetricReporters list should be empty", 0, testRegistry.getReporters().size());
 
-	private static final class TestMetricRegistry implements MetricRegistry {
+            // default delimiter should be used
+            assertEquals("A.B.X.D.1", group.getMetricIdentifier("1", FILTER_C));
+            // no caching should occur
+            assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B));
+            // invalid reporter indices do not throw errors
+            assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B, -1, '.'));
+            assertEquals("A.X.C.D.1", group.getMetricIdentifier("1", FILTER_B, 2, '.'));
+        } finally {
+            testRegistry.shutdown().get();
+        }
+    }
 
-		private Runnable onRegistrationAction;
+    @Test
+    public void testGetAllVariablesDoesNotDeadlock() throws InterruptedException {
+        final BlockerSync parentSync = new BlockerSync();
+        final BlockerSync childSync = new BlockerSync();
 
-		void setOnRegistrationAction(Runnable onRegistrationAction) {
-			this.onRegistrationAction = onRegistrationAction;
-		}
+        AtomicReference<BlockerSync> syncRef = new AtomicReference<>();
+        final MetricRegistry registry =
+                TestingMetricRegistry.builder()
+                        .setRegisterConsumer(
+                                (metric, metricName, group) -> {
+                                    syncRef.get().blockNonInterruptible();
+                                    group.getAllVariables();
+                                })
+                        .build();
 
-		@Override
-		public char getDelimiter() {
-			return 0;
-		}
+        final MetricGroup parent =
+                new GenericMetricGroup(
+                        registry,
+                        UnregisteredMetricGroups.createUnregisteredTaskManagerMetricGroup(),
+                        "parent");
+        final MetricGroup child = parent.addGroup("child");
 
-		@Override
-		public char getDelimiter(int index) {
-			return 0;
-		}
+        final Thread parentRegisteringThread = new Thread(() -> parent.counter("parent_counter"));
+        final Thread childRegisteringThread = new Thread(() -> child.counter("child_counter"));
 
-		@Override
-		public int getNumberReporters() {
-			return 0;
-		}
+        try {
+            // start both threads and have them block in the registry, so they acquire the lock of
+            // their respective group
+            syncRef.set(childSync);
+            childRegisteringThread.start();
+            childSync.awaitBlocker();
 
-		@Override
-		public void register(Metric metric, String metricName, AbstractMetricGroup group) {
-			onRegistrationAction.run();
-			group.getAllVariables();
-		}
+            syncRef.set(parentSync);
+            parentRegisteringThread.start();
+            parentSync.awaitBlocker();
 
-		@Override
-		public void unregister(Metric metric, String metricName, AbstractMetricGroup group) {
-		}
+            // the parent thread remains blocked to simulate the child thread holding some lock in
+            // the registry/reporter
+            // the child thread continues execution and calls getAllVariables()
+            // in the past this would block indefinitely since the method acquires the locks of all
+            // parent groups
+            childSync.releaseBlocker();
+            // wait with a timeout to ensure the finally block is executed _at some point_,
+            // un-blocking the parent
+            childRegisteringThread.join(1000 * 10);
 
-		@Override
-		public ScopeFormats getScopeFormats() {
-			return null;
-		}
-
-		@Nullable
-		@Override
-		public String getMetricQueryServicePath() {
-			return null;
-		}
-	}
+            parentSync.releaseBlocker();
+            parentRegisteringThread.join();
+        } finally {
+            parentSync.releaseBlocker();
+            childSync.releaseBlocker();
+            parentRegisteringThread.join();
+            childRegisteringThread.join();
+        }
+    }
 }

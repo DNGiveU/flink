@@ -20,22 +20,18 @@ package org.apache.flink.runtime.rpc.messages;
 
 import org.apache.flink.util.Preconditions;
 
-import java.io.Serializable;
 import java.util.concurrent.Callable;
 
-/**
- * Message for asynchronous callable invocations
- */
-public final class CallAsync implements Serializable {
-	private static final long serialVersionUID = 2834204738928484060L;
+/** Message for asynchronous callable invocations */
+public final class CallAsync {
 
-	private transient Callable<?> callable;
+    private final Callable<?> callable;
 
-	public CallAsync(Callable<?> callable) {
-		this.callable = Preconditions.checkNotNull(callable);
-	}
+    public CallAsync(Callable<?> callable) {
+        this.callable = Preconditions.checkNotNull(callable);
+    }
 
-	public Callable<?> getCallable() {
-		return callable;
-	}
+    public Callable<?> getCallable() {
+        return callable;
+    }
 }
